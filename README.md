@@ -47,6 +47,18 @@ python src/app.py --all
 📊 [KẾT QUẢ TEST SUITE]: 2 Đã chạy (TC01, TC02 mẫu) | 3 Đang chờ viết câu hỏi (TODO)
 ```
 
+### Giao diện Streamlit (tùy chọn)
+
+Sau khi cài dependencies, chạy giao diện web bằng lệnh:
+
+```bash
+python -m streamlit run src/streamlit_app.py
+```
+
+Chọn OpenAI, Gemini hoặc Mock Offline trên sidebar. API key có thể nhập trực tiếp
+trong ô password; nếu để trống, ứng dụng dùng key tương ứng trong tệp `.env`.
+API key không được ghi vào source code hoặc Waterfall Trace.
+
 > 🔑 **QUY ĐỊNH BẮT BUỘC VỀ API KEY VÀ NỘP BÀI (SUBMISSION REQUIREMENT):**  
 > 
 > 1. **Giai đoạn gõ code & debug (Miễn phí 0đ):** Hệ thống mặc định chạy `MockOfflineProvider` giúp bạn thực hành gõ code, kiểm thử logic ban đầu hoàn toàn miễn phí, không tốn token, không lo nghẽn mạng.  

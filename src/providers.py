@@ -6,6 +6,7 @@ Hỗ trợ Native Tool Calling và chuyển đổi linh hoạt qua biến môi t
 import os
 import sys
 import json
+import re
 from typing import Dict, Any, List
 from dotenv import load_dotenv
 
@@ -32,32 +33,258 @@ class MockOfflineProvider(BaseLLMProvider):
         self.model_name = "Offline-Mock-Model-2026"
 
     def generate(self, prompt: str, system_prompt: str = "") -> str:
-        return f"[Mock Chatbot Response]: Xin chào! Tôi đã nhận được câu hỏi '{prompt}'. (Chế độ Chatbot không có Tool tra cứu dữ liệu thời gian thực)."
+        return (
+            "[Mock Chatbot Response]: Tôi có thể giải đáp thông tin chung về "
+            "phòng họp VinUni, nhưng không thể kiểm tra lịch trống hoặc tạo booking "
+            "vì Chatbot Baseline không được kết nối Tool."
+        )
+
+    @staticmethod
+    def _tool_is_available(tool_name: str, tools_schema: List[Dict[str, Any]]) -> bool:
+        return any(tool.get("name") == tool_name for tool in tools_schema)
+
+    @staticmethod
+    def _extract_time_range(prompt: str):
+        match = re.search(
+            r"từ\s*(\d{1,2}:\d{2})\s*đến\s*(\d{1,2}:\d{2})\s*ngày\s*(\d{1,2}/\d{1,2}/\d{4})",
+            prompt,
+            flags=re.IGNORECASE
+        )
+        if not match:
+            return None, None
+        start_time, end_time, date = match.groups()
+        return f"{start_time} {date}", f"{end_time} {date}"
+
+    @staticmethod
+    def _extract_room_id(prompt: str):
+        match = re.search(r"\b([A-Za-z]\d{3})\b", prompt)
+        return match.group(1).upper() if match else None
+
+    @staticmethod
+    def _extract_min_capacity(prompt: str):
+        match = re.search(r"(?:ít nhất|tối thiểu)\s*(\d+)\s*chỗ", prompt, flags=re.IGNORECASE)
+        return int(match.group(1)) if match else None
+
+    @staticmethod
+    def _extract_equipment(prompt: str) -> list:
+        prompt_lower = prompt.casefold()
+        equipment_names = [
+            "máy chiếu",
+            "màn hình trình chiếu",
+            "bảng trắng",
+            "hệ thống họp trực tuyến",
+            "màn hình led",
+            "micro không dây"
+        ]
+        return [item for item in equipment_names if item in prompt_lower]
+
+    @staticmethod
+    def _extract_purpose(prompt: str):
+        before_time = re.search(
+            r"cho\s+(?:nhóm|cuộc họp)?\s*(.+?)\s+từ\s*\d{1,2}:\d{2}",
+            prompt,
+            flags=re.IGNORECASE
+        )
+        if before_time:
+            return before_time.group(1).strip()
+
+        after_time = re.search(
+            r"cho\s+cuộc họp\s+(.+?)(?:[.!?]|$)",
+            prompt,
+            flags=re.IGNORECASE
+        )
+        return after_time.group(1).strip() if after_time else None
+
+    @staticmethod
+    def _extract_react_context(prompt: str) -> Dict[str, Any]:
+        marker = "REACT_CONTEXT_JSON:"
+        if marker not in prompt:
+            return {"original_query": prompt, "history": []}
+        try:
+            return json.loads(prompt.rsplit(marker, 1)[1].strip())
+        except (TypeError, json.JSONDecodeError):
+            return {"original_query": prompt, "history": []}
+
+    @staticmethod
+    def _observation_text(observation: Dict[str, Any]) -> str:
+        status = observation.get("status", "UNKNOWN")
+        if status == "SUCCESS":
+            if "booking_id" in observation:
+                return observation.get(
+                    "message",
+                    f"Đặt phòng thành công với mã {observation['booking_id']}."
+                )
+            rooms = observation.get("available_rooms", [])
+            if not rooms:
+                return "Không tìm thấy phòng đáp ứng đầy đủ các điều kiện yêu cầu."
+            room_summaries = [
+                f"{room['room_id']} ({room['capacity']} chỗ, {room['location']})"
+                for room in rooms
+            ]
+            return "Các phòng còn trống: " + "; ".join(room_summaries) + "."
+        return observation.get("message", f"Công cụ trả về trạng thái {status}.")
 
     def generate_with_tools(self, prompt: str, tools_schema: List[Dict[str, Any]], system_prompt: str = "") -> Dict[str, Any]:
-        prompt_lower = prompt.lower()
-        
-        # Mô phỏng nhận diện intent gọi Tool
-        if "sv2026001" in prompt_lower and "đặt lịch" in prompt_lower:
-            return {
-                "type": "tool_call",
-                "tool_name": "schedule_appointment",
-                "arguments": {"student_id": "SV2026001", "datetime_str": "14:00 15/09/2026", "advisor_name": "PGS.TS Nguyễn Văn A"},
-                "thought": "Người dùng yêu cầu đặt lịch hẹn tư vấn cho sinh viên SV2026001. Tôi sẽ gọi tool schedule_appointment."
-            }
-        elif "sv2026001" in prompt_lower or "tra cứu" in prompt_lower:
-            return {
-                "type": "tool_call",
-                "tool_name": "academic_query",
-                "arguments": {"student_id": "SV2026001"},
-                "thought": "Người dùng muốn tra cứu thông tin học vụ của sinh viên SV2026001. Tôi sẽ gọi tool academic_query."
-            }
-        else:
+        react_context = self._extract_react_context(prompt)
+        original_query = react_context.get("original_query", prompt)
+        history = react_context.get("history", [])
+
+        prompt_lower = original_query.casefold()
+        start_datetime, end_datetime = self._extract_time_range(original_query)
+        room_id = self._extract_room_id(original_query)
+        min_capacity = self._extract_min_capacity(original_query)
+        equipment = self._extract_equipment(original_query)
+
+        check_intent = any(phrase in prompt_lower for phrase in [
+            "kiểm tra",
+            "còn trống",
+            "tìm phòng",
+            "tìm một phòng"
+        ])
+        booking_intent = "đặt phòng" in prompt_lower or "booking" in prompt_lower
+        policy_intent = any(phrase in prompt_lower for phrase in [
+            "quy định",
+            "chính sách",
+            "hướng dẫn hủy",
+            "hướng dẫn đổi"
+        ])
+
+        if not history and policy_intent:
             return {
                 "type": "text",
-                "content": f"[Mock Agent Response]: Xin chào! Quy chế học vụ VinUni yêu cầu sinh viên tích lũy tối thiểu 120 tín chỉ và duy trì GPA trên 2.0 để tốt nghiệp.",
-                "thought": "Câu hỏi chung về quy chế học vụ, trả lời trực tiếp không cần gọi Tool."
+                "content": (
+                    "[Mock Agent Response]: Tôi chưa có dữ liệu chính sách nội bộ cụ thể "
+                    "để xác nhận quy định này. Vui lòng liên hệ bộ phận Facilities VinUni."
+                ),
+                "thought": "Đây là câu hỏi chính sách chung, không cần gọi Tool dữ liệu thời gian thực."
             }
+
+        if history:
+            last_event = history[-1]
+            last_tool = last_event.get("action", {}).get("tool_name")
+            observation = last_event.get("observation", {})
+            status = observation.get("status")
+
+            if last_tool == "check_room_availability":
+                available_rooms = observation.get("available_rooms", [])
+                if status == "SUCCESS" and booking_intent and available_rooms:
+                    purpose = self._extract_purpose(original_query)
+                    if not purpose:
+                        return {
+                            "type": "text",
+                            "content": "Vui lòng cung cấp mục đích cuộc họp trước khi đặt phòng.",
+                            "thought": "Observation có phòng phù hợp nhưng yêu cầu còn thiếu mục đích."
+                        }
+                    arguments = {
+                        "room_id": available_rooms[0]["room_id"],
+                        "start_datetime": start_datetime,
+                        "end_datetime": end_datetime,
+                        "purpose": purpose
+                    }
+                    if equipment:
+                        arguments["equipment"] = equipment
+                    return {
+                        "type": "tool_call",
+                        "tool_name": "book_meeting_room",
+                        "arguments": arguments,
+                        "thought": "Đã tìm thấy phòng phù hợp trong Observation; tiếp tục tạo booking."
+                    }
+
+                return {
+                    "type": "text",
+                    "content": self._observation_text(observation),
+                    "thought": "Đã có kết quả tra cứu và không cần thực hiện thêm Tool Call."
+                }
+
+            if last_tool == "book_meeting_room":
+                return {
+                    "type": "text",
+                    "content": self._observation_text(observation),
+                    "thought": "Đã nhận kết quả đặt phòng và có thể kết luận cho người dùng."
+                }
+
+        # Ý định kiểm tra được ưu tiên khi câu hỏi yêu cầu kiểm tra rồi mới đặt.
+        if check_intent:
+            tool_name = "check_room_availability"
+            if not self._tool_is_available(tool_name, tools_schema):
+                return {
+                    "type": "text",
+                    "content": f"Không thể kiểm tra phòng vì Tool '{tool_name}' chưa được cấu hình.",
+                    "thought": "Facilities Tool Schema chưa được công bố."
+                }
+            if not start_datetime or not end_datetime:
+                return {
+                    "type": "text",
+                    "content": "Vui lòng cung cấp đầy đủ giờ bắt đầu, giờ kết thúc và ngày cần sử dụng phòng.",
+                    "thought": "Thiếu khoảng thời gian bắt buộc để kiểm tra phòng."
+                }
+
+            arguments = {
+                "start_datetime": start_datetime,
+                "end_datetime": end_datetime
+            }
+            if room_id:
+                arguments["room_id"] = room_id
+            if min_capacity is not None:
+                arguments["min_capacity"] = min_capacity
+            if equipment:
+                arguments["equipment"] = equipment
+
+            return {
+                "type": "tool_call",
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "thought": "Cần kiểm tra dữ liệu phòng và thiết bị trước khi trả lời hoặc tiếp tục đặt phòng."
+            }
+
+        if booking_intent:
+            tool_name = "book_meeting_room"
+            if not self._tool_is_available(tool_name, tools_schema):
+                return {
+                    "type": "text",
+                    "content": f"Không thể đặt phòng vì Tool '{tool_name}' chưa được cấu hình.",
+                    "thought": "Facilities Tool Schema chưa được công bố."
+                }
+
+            purpose = self._extract_purpose(prompt)
+            missing_fields = []
+            if not room_id:
+                missing_fields.append("mã phòng")
+            if not start_datetime or not end_datetime:
+                missing_fields.append("khoảng thời gian")
+            if not purpose:
+                missing_fields.append("mục đích cuộc họp")
+            if missing_fields:
+                return {
+                    "type": "text",
+                    "content": f"Vui lòng bổ sung: {', '.join(missing_fields)}.",
+                    "thought": "Thiếu tham số bắt buộc nên chưa thể gọi Tool đặt phòng."
+                }
+
+            arguments = {
+                "room_id": room_id,
+                "start_datetime": start_datetime,
+                "end_datetime": end_datetime,
+                "purpose": purpose
+            }
+            if equipment:
+                arguments["equipment"] = equipment
+
+            return {
+                "type": "tool_call",
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "thought": "Người dùng đã cung cấp đủ thông tin để tạo booking phòng họp."
+            }
+
+        return {
+            "type": "text",
+            "content": (
+                "[Mock Agent Response]: Tôi chưa có dữ liệu chính sách nội bộ cụ thể "
+                "để xác nhận quy định này. Vui lòng liên hệ bộ phận Facilities VinUni."
+            ),
+            "thought": "Câu hỏi chung không cần truy vấn dữ liệu phòng theo thời gian thực."
+        }
 
 
 class GeminiProvider(BaseLLMProvider):

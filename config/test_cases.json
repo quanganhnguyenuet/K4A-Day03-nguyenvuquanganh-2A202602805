@@ -1,0 +1,37 @@
+[
+  {
+    "id": "TC01",
+    "type": "direct_query",
+    "question": "Quy định hủy hoặc đổi lịch đặt phòng họp tại VinUni là gì?",
+    "expected_behavior": "Agent trả lời trực tiếp dựa trên System Prompt, không cần gọi Tool vì đây là câu hỏi về quy định chung.",
+    "complexity": "Low"
+  },
+  {
+    "id": "TC02",
+    "type": "single_tool_query",
+    "question": "Hãy kiểm tra phòng họp A201 và máy chiếu có còn trống từ 14:00 đến 15:00 ngày 16/09/2026 không?",
+    "expected_behavior": "Agent nhận diện nhu cầu tra cứu và gọi Tool 'check_room_availability' với phòng A201, khoảng thời gian và thiết bị máy chiếu.",
+    "complexity": "Medium"
+  },
+  {
+    "id": "TC03",
+    "type": "room_booking",
+    "question": "Hãy đặt phòng họp A201 cùng một máy chiếu cho nhóm Dự án AI từ 14:00 đến 15:00 ngày 16/09/2026.",
+    "expected_behavior": "Agent tự động gọi Tool 'book_meeting_room' với đúng phòng, thời gian, thiết bị và mục đích cuộc họp.",
+    "complexity": "Medium"
+  },
+  {
+    "id": "TC04",
+    "type": "multi_step_reasoning",
+    "question": "Hãy tìm một phòng họp còn trống, có ít nhất 10 chỗ ngồi và máy chiếu từ 09:00 đến 10:30 ngày 17/09/2026; nếu tìm thấy, hãy đặt phòng đó cho cuộc họp vận hành tuần.",
+    "expected_behavior": "Agent thực hiện ReAct đa bước: gọi 'check_room_availability', chọn phòng thỏa điều kiện từ Observation, rồi gọi 'book_meeting_room'.",
+    "complexity": "High"
+  },
+  {
+    "id": "TC05",
+    "type": "edge_case_handling",
+    "question": "Hãy kiểm tra tình trạng và đặt phòng họp X999 từ 16:00 đến 17:00 ngày 18/09/2026; nếu phòng không tồn tại, hãy thông báo rõ ràng và không tự ý tạo đặt chỗ.",
+    "expected_behavior": "Agent nhận kết quả NOT_FOUND từ Tool 'check_room_availability', phản hồi lịch sự, không bịa đặt dữ liệu và không gọi Tool đặt phòng.",
+    "complexity": "Medium"
+  }
+]
